@@ -1,0 +1,21 @@
+﻿@using Microsoft.AspNetCore.Components.Authorization
+@inject NavigationManager Navigation
+
+<AuthorizeView>
+    <Authorized>
+        <div class="d-flex align-items-center gap-2">
+            <a class="nav-link" href="Identity/Account/Manage">
+                Olá, @context.User.Identity?.Name!
+            </a>
+            <form class="d-inline" method="post" action="Identity/Account/Logout">
+                <input type="hidden" name="returnUrl" value="@Navigation.ToBaseRelativePath(Navigation.Uri)" />
+                <button type="submit" class="btn btn-link nav-link p-0">
+                    Sair
+                </button>
+            </form>
+        </div>
+    </Authorized>
+    <NotAuthorized>
+        <a class="nav-link" href="Identity/Account/Login">Entrar</a>
+    </NotAuthorized>
+</AuthorizeView>

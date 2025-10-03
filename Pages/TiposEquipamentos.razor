@@ -1,0 +1,137 @@
+﻿@page "/tipos-equipamentos"
+@attribute [Authorize]
+
+@using Falcare.Projetos.App.Data
+@using Falcare.Projetos.App.Models
+@using Microsoft.EntityFrameworkCore
+@inject AppDbContext Db
+
+<h3>Tipos de Produtos</h3>
+
+<input class="form-control mb-2" placeholder="Filtrar..." @bind="filtro" @bind:event="oninput" />
+
+@if (!string.IsNullOrEmpty(msgErro))
+{
+    <div class="alert alert-danger">@msgErro</div>
+}
+@if (!string.IsNullOrEmpty(msgOk))
+{
+    <div class="alert alert-success">@msgOk</div>
+}
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+    <strong>Total: @listaFiltrada.Count()</strong>
+    <button class="btn btn-primary" @onclick="Novo">Novo</button>
+</div>
+
+<table class="table table-striped">
+    <thead><tr><th>ID</th><th>Nome</th><th style="width:8rem;"></th></tr></thead>
+    <tbody>
+        @foreach (var t in listaFiltrada)
+        {
+            <tr class="@(editando?.TipoEquipamentoId == t.TipoEquipamentoId ? "table-info" : null)">
+                <td>@t.TipoEquipamentoId</td>
+                <td>@t.Nome</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => Editar(t.TipoEquipamentoId)">Editar</button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (editando is not null)
+{
+    <hr />
+    <EditForm Model="editando" OnValidSubmit="Salvar">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+        <div class="mb-3">
+            <label>Nome</label>
+            <InputText class="form-control" @bind-Value="editando.Nome" />
+        </div>
+        <button class="btn btn-success" type="submit">Salvar</button>
+        <button class="btn btn-secondary ms-2" type="button" @onclick="Cancelar">Cancelar</button>
+    </EditForm>
+}
+
+@code {
+    string filtro = "";
+    string? msgErro, msgOk;
+    List<TipoEquipamento> lista = new();
+
+    IEnumerable<TipoEquipamento> listaFiltrada =>
+        string.IsNullOrWhiteSpace(filtro)
+            ? lista
+            : lista.Where(x => (x.Nome ?? "").Contains(filtro, StringComparison.OrdinalIgnoreCase));
+
+    TipoEquipamento? editando;
+
+    protected override async Task OnInitializedAsync() => await Carregar();
+
+    async Task Carregar()
+    {
+        Db.ChangeTracker.Clear();
+        lista = await Db.TiposEquipamentos.AsNoTracking()
+            .OrderBy(x => x.Nome)
+            .ToListAsync();
+        editando = null;
+        msgErro = msgOk = null;
+    }
+
+    void Novo()
+    {
+        editando = new TipoEquipamento();
+        msgErro = msgOk = null;
+    }
+
+    async Task Editar(int id)
+    {
+        editando = await Db.TiposEquipamentos.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.TipoEquipamentoId == id);
+        msgErro = msgOk = null;
+    }
+
+    async Task Salvar()
+    {
+        if (editando is null) return;
+
+        var nome = (editando.Nome ?? "").Trim();
+        if (string.IsNullOrEmpty(nome))
+        {
+            msgErro = "Nome é obrigatório.";
+            return;
+        }
+        var dup = await Db.TiposEquipamentos.AsNoTracking()
+            .AnyAsync(x => x.Nome == nome && x.TipoEquipamentoId != editando.TipoEquipamentoId);
+        if (dup)
+        {
+            msgErro = $"Já existe um tipo com o nome '{nome}'.";
+            return;
+        }
+        editando.Nome = nome;
+
+        var local = Db.TiposEquipamentos.Local
+            .FirstOrDefault(x => x.TipoEquipamentoId == editando.TipoEquipamentoId);
+        if (local is not null) Db.Entry(local).State = EntityState.Detached;
+
+        if (editando.TipoEquipamentoId == 0)
+            Db.TiposEquipamentos.Add(editando);
+        else
+        {
+            Db.Attach(editando);
+            Db.Entry(editando).State = EntityState.Modified;
+        }
+
+        await Db.SaveChangesAsync();
+        Db.ChangeTracker.Clear();
+        msgOk = "Salvo com sucesso.";
+        await Carregar();
+    }
+
+    void Cancelar()
+    {
+        editando = null;
+        msgErro = msgOk = null;
+    }
+}

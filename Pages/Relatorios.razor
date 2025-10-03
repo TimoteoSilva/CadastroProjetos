@@ -1,0 +1,71 @@
+﻿@page "/relatorios"
+@attribute [Authorize]
+@using Falcare.Projetos.App.Data
+@using Falcare.Projetos.App.Models
+@using Microsoft.EntityFrameworkCore
+@using Falcare.Projetos.App.Services
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Identity
+
+@inject AppDbContext Db
+@inject IUserContext UserCtx
+@inject AuthenticationStateProvider AuthState
+@inject UserManager<ApplicationUser> UserMgr
+
+<h3>Relatórios — Funil</h3>
+
+@if (cards is null)
+{
+    <p>Carregando...</p>
+}
+else
+{
+    <div class="row">
+        @foreach (var c in cards)
+        {
+            <div class="col-md-3 mb-3">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title">@c.Nome</h6>
+                        <div class="display-6">@c.Quantidade</div>
+                        <div class="text-muted">Valor estimado: @c.Valor.ToString("C")</div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    record Card(string Nome, int Quantidade, decimal Valor);
+
+    List<Card>? cards;
+    bool isAdminOrDir;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Resolve papel
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        var u = await UserMgr.GetUserAsync(auth.User);
+        var roles = u is null ? new List<string>() : (await UserMgr.GetRolesAsync(u)).ToList();
+        isAdminOrDir = roles.Contains("Admin") || roles.Contains("Diretoria");
+
+        // Query base com RBAC
+        var q = Db.Projetos.Include(o => o.Status).AsQueryable();
+        if (!isAdminOrDir)
+            q = q.Where(o => o.ResponsavelUserId == UserCtx.UserId);
+
+        var dados = await q.ToListAsync();
+
+        cards = dados
+            .GroupBy(o => o.Status?.Nome ?? "(sem status)")
+            .OrderBy(g => g.Key)
+            .Select(g => new Card(
+                g.Key,
+                g.Count(),
+                g.Sum(x => x.ValorEstimado ?? 0m) // se usa decimal? conf: ValorEstimado
+            ))
+            .ToList();
+    }
+}
+

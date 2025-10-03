@@ -1,0 +1,156 @@
+﻿@page "/clientes"
+@using Microsoft.EntityFrameworkCore
+@using Falcare.Projetos.App.Data
+@using Falcare.Projetos.App.Models
+@inject AppDbContext Db
+@inject NavigationManager Nav
+
+<h3>Clientes</h3>
+
+<input class="form-control" placeholder="Buscar por razão social..." @bind="filtro" />
+<button class="btn btn-primary mt-2" @onclick="Novo">Novo cliente</button>
+
+<table class="table table-striped mt-3">
+    <thead>
+        <tr>
+            <th>Id</th>
+            <th>Razão Social</th>
+            <th>CNPJ</th>
+            <th>Ativo</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var c in clientesFiltrados)
+        {
+            <tr class="@(editando && clienteEdicao?.ClienteId == c.ClienteId ? "table-info" : null)">
+                <td>@c.ClienteId</td>
+                <td>@(c.RazaoSocial ?? "-")</td>
+                <td>@(c.Cnpj ?? "-")</td>
+                <td>@(c.Ativo ? "Sim" : "Não")</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => Editar(c.ClienteId)">Editar</button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (editando)
+{
+    <EditForm Model="clienteEdicao" OnValidSubmit="Salvar">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        <div class="mb-2">
+            <label>Razão Social</label>
+            <InputText class="form-control" @bind-Value="clienteEdicao.RazaoSocial" />
+        </div>
+
+        <div class="mb-2">
+            <label>CNPJ</label>
+            <InputText class="form-control" @bind-Value="clienteEdicao.Cnpj" />
+        </div>
+
+        <div class="form-check mb-2">
+            <InputCheckbox class="form-check-input" @bind-Value="clienteEdicao.Ativo" />
+            <label class="form-check-label">Ativo</label>
+        </div>
+
+        <button class="btn btn-success" type="submit">Salvar</button>
+        <button class="btn btn-secondary ms-2" type="button" @onclick="Cancelar">Cancelar</button>
+    </EditForm>
+}
+
+@code {
+    string filtro = "";
+    List<Cliente> clientes = new();
+    IEnumerable<Cliente> clientesFiltrados =>
+        string.IsNullOrWhiteSpace(filtro)
+            ? clientes
+            : clientes.Where(c => (c.RazaoSocial ?? string.Empty)
+                .Contains(filtro, StringComparison.OrdinalIgnoreCase));
+
+    bool editando = false;
+    Cliente clienteEdicao = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CarregarBase();
+    }
+
+    async Task CarregarBase()
+    {
+        // evita rastros de tracking entre operações (Blazor Server)
+        Db.ChangeTracker.Clear();
+
+        clientes = await Db.Clientes
+            .AsNoTracking()
+            .OrderBy(c => c.RazaoSocial ?? string.Empty)
+            .ToListAsync();
+
+        editando = false;
+        clienteEdicao = new();
+        StateHasChanged();
+    }
+
+    void Novo()
+    {
+        clienteEdicao = new Cliente { Ativo = true };
+        editando = true;
+    }
+
+    async Task Editar(int id)
+    {
+        // carrega SEM tracking para não anexar instância ao contexto
+        var c = await Db.Clientes
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.ClienteId == id);
+
+        if (c is null) return;
+
+        // cria uma cópia para edição
+        clienteEdicao = new Cliente
+        {
+            ClienteId = c.ClienteId,
+            RazaoSocial = c.RazaoSocial,
+            Cnpj = c.Cnpj,
+            Ativo = c.Ativo,
+            ContatosJson = c.ContatosJson
+        };
+        editando = true;
+    }
+
+    async Task Salvar()
+    {
+        // se houver instância local com a mesma chave, desanexa para evitar conflito
+        var local = Db.Clientes.Local.FirstOrDefault(x => x.ClienteId == clienteEdicao.ClienteId);
+        if (local is not null)
+            Db.Entry(local).State = EntityState.Detached;
+
+        if (clienteEdicao.ClienteId == 0)
+        {
+            Db.Clientes.Add(clienteEdicao);
+        }
+        else
+        {
+            // anexa a entidade editada e marca como modificada
+            Db.Attach(clienteEdicao);
+            Db.Entry(clienteEdicao).State = EntityState.Modified;
+            // se quiser granularidade: marque propriedades específicas como IsModified = true
+        }
+
+        await Db.SaveChangesAsync();
+
+        // limpa rastros desta operação
+        Db.ChangeTracker.Clear();
+
+        await CarregarBase();
+    }
+
+    void Cancelar()
+    {
+        editando = false;
+        clienteEdicao = new();
+    }
+}

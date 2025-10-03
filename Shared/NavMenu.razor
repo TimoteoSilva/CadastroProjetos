@@ -1,0 +1,68 @@
+﻿@using Microsoft.AspNetCore.Components.Authorization
+
+<div class="nav-scrollable">
+    <nav class="flex-column">
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <span class="oi oi-home" aria-hidden="true"></span> Home
+            </NavLink>
+        </div>
+
+        <AuthorizeView>
+            <Authorized>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="projetos" Match="NavLinkMatch.All">
+                        <span class="oi oi-briefcase" aria-hidden="true"></span> Projetos
+                    </NavLink>
+                </div>
+
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="clientes" Match="NavLinkMatch.All">
+                        <span class="oi oi-people" aria-hidden="true"></span> Clientes
+                    </NavLink>
+                </div>
+
+                <div class="nav-item px-3">
+                     <NavLink class="nav-link" href="/tipos-equipamentos" Match="NavLinkMatch.All">
+                           <span class="oi oi-list-rich" aria-hidden="true"></span> Tipos de Produtos
+                     </NavLink>
+                </div>
+
+                <!-- NOVO: Cadastro Layout -->
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="layouts" Match="NavLinkMatch.All">
+                        <span class="oi oi-grid-three-up" aria-hidden="true"></span> Cadastro Layout
+                    </NavLink>
+                </div>
+
+                <!-- Só Admin/Diretoria -->
+                <AuthorizeView Roles="Admin,Diretoria" Context="adminView">
+                    <div class="nav-item px-3">
+                        <NavLink class="nav-link" href="usuarios" Match="NavLinkMatch.All">
+                            <span class="oi oi-people" aria-hidden="true"></span> Usuários
+                        </NavLink>
+                    </div>
+                </AuthorizeView>
+
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="relatorios" Match="NavLinkMatch.All">
+                        <span class="oi oi-graph" aria-hidden="true"></span> Relatórios
+                    </NavLink>
+                </div>
+
+            </Authorized>
+
+            <NotAuthorized>
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="Identity/Account/Login">
+                        <span class="oi oi-account-login" aria-hidden="true"></span> Entrar
+                    </NavLink>
+                </div>
+            </NotAuthorized>
+        </AuthorizeView>
+    </nav>
+</div>
+
+@code {
+    // Sem “collapse” aqui para evitar sumiço do menu.
+}

@@ -1,0 +1,845 @@
+﻿@page "/projetos"
+@attribute [Authorize]
+@using Falcare.Projetos.App.Data
+@using Falcare.Projetos.App.Models
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Falcare.Projetos.App.Services
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AppDbContext Db
+@inject UserManager<ApplicationUser> UserMgr
+@inject AuthenticationStateProvider AuthState
+@inject IUserContext UserCtx
+@inject IChangeNotes ChangeNotes
+
+<h3>Projetos</h3>
+
+@if (showStatusModal)
+{
+    <div class="modal-backdrop fade show"></div>
+    <div class="modal fade show d-block" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Alterar status</h5>
+                    <button type="button" class="btn-close" @onclick="CancelStatusModal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Adicionar um motivo/observação (opcional) para esta mudança de status:</p>
+                    <textarea class="form-control" rows="4" @bind="statusObservation"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" @onclick="CancelStatusModal">Cancelar</button>
+                    <button class="btn btn-primary" @onclick="ConfirmStatusChange">Confirmar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* ---------- MODAL DE EDIÇÃO (mantido) ---------- *@
+@if (showEditModal && editando && projetoEdicao is not null)
+{
+    //var pe = projetoEdicao!; 
+    <div class="modal-backdrop fade show"></div>
+    <div class="modal fade show d-block" tabindex="-1">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        @(projetoEdicao.ProjetoId == 0 ? "Novo projeto" : $"Editar projeto {projetoEdicao.Ordem}")
+                    </h5>
+                    <button type="button" class="btn-close" @onclick="Cancelar"></button>
+                </div>
+                <div class="modal-body">
+
+                    @* Status (com bloqueio visual e dica) *@
+                    <div class="mb-3">
+                        <strong>Status:</strong>
+
+                        @{
+                            bool canChangeStatus = isAdminOrDir || (projetoEdicao?.ResponsavelUserId == UserCtx.UserId);
+                        }
+
+                        <div class="btn-group btn-group-sm mt-1" role="group" aria-label="Funil">
+                            @foreach (var s in statusesPermitidos)
+                            {
+                                var isAtual = s.StatusProjetoId == projetoEdicao!.StatusProjetoId;
+                                <button type="button"
+                                        class="btn @(isAtual ? "btn-primary" : "btn-outline-secondary")"
+                                        disabled="@(!canChangeStatus || isAtual)"
+                                        title="@(!canChangeStatus ? "Somente Admin/Diretoria ou o responsável podem alterar o status." : null)"
+                                        @onclick="() => { if (canChangeStatus && !isAtual) SetStatus(s.StatusProjetoId); }">
+                                    @s.Nome
+                                </button>
+                            }
+                        </div>
+
+                        @if (!canChangeStatus)
+                        {
+                            <div class="mt-1">
+                                <small class="text-muted">
+                                    Somente <strong>Admin/Diretoria</strong> ou o <strong>responsável</strong> pelo projeto podem alterar o status.
+                                </small>
+                            </div>
+                        }
+                    </div>
+
+
+                    <div class="mb-2">
+                        <label>Status atual</label>
+                        <div>
+                            @{
+                                var statusAtualId = projetoEdicao.StatusProjetoId;
+                            }
+                            <span class="badge bg-secondary">
+                                @(statuses.FirstOrDefault(s => s.StatusProjetoId == statusAtualId)?.Nome ?? "(não definido)")
+                            </span>
+                        </div>
+                    </div>
+
+                    <EditForm @key="projetoEdicao?.ProjetoId"
+                              Model="projetoEdicao"
+                              OnValidSubmit="Salvar">
+                        <DataAnnotationsValidator />
+                        <ValidationSummary />
+
+                        @if (!string.IsNullOrEmpty(erroOrdem))
+                        {
+                            <div class="text-danger mb-2">@erroOrdem</div>
+                        }
+                        @if (!string.IsNullOrEmpty(erroEquip))
+                        {
+                            <div class="text-danger mb-2">@erroEquip</div>
+                        }
+                        @if (!string.IsNullOrEmpty(erroDatas))
+                        {
+                            <div class="text-danger mb-2">@erroDatas</div>
+                        }
+
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <label>Ordem <small class="text-muted">(formato FA0000)</small></label>
+                                <InputText class="form-control"
+                                           @bind-Value="projetoEdicao.Ordem"
+                                           placeholder="FA0001"
+                                           pattern="^FA\d{4}$" />
+                                <ValidationMessage For="() => projetoEdicao.Ordem" />
+                            </div>
+
+                            <div class="col-md-6">
+                                <label>Cliente</label>
+                                <InputSelect class="form-select" @bind-Value="projetoEdicao.ClienteId">
+                                    @foreach (var c in clientes)
+                                    {
+                                        <option value="@c.ClienteId">@c.RazaoSocial</option>
+                                    }
+                                </InputSelect>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label>Responsável</label>
+                                <InputSelect class="form-select"
+                                             @bind-Value="projetoEdicao.ResponsavelUserId"
+                                             disabled="@(!isAdminOrDir)">
+                                    <option value="">-- ninguém --</option>
+                                    @foreach (var u in usuarios)
+                                    {
+                                        <option value="@u.Id">@u.Email</option>
+                                    }
+                                </InputSelect>
+                                @if (!isAdminOrDir)
+                                {
+                                    <small class="text-muted">Somente Admin/Diretoria podem alterar o responsável.</small>
+                                }
+                            </div>
+
+                            <div class="col-md-6">
+                                <label>Título</label>
+                                <InputText class="form-control" @bind-Value="projetoEdicao.Titulo" />
+                            </div>
+
+                            <div class="col-md-6">
+                                <label>Código Interno</label>
+                                <InputText class="form-control" @bind-Value="projetoEdicao.CodigoInterno" />
+                            </div>
+
+                            <div class="col-md-4">
+                                <label>Ref. de Orçamento</label>
+                                <InputText class="form-control" maxlength="20" @bind-Value="projetoEdicao.RefOrcamento" />
+                            </div>
+
+                            <div class="col-md-4">
+                                <label>Data Início</label>
+                                <InputDate TValue="DateOnly?" class="form-control"
+                                           @bind-Value="projetoEdicao.DataInicio" />
+                            </div>
+
+                            <div class="col-md-4">
+                                <label>Data Entrega</label>
+                                <InputDate TValue="DateOnly?" class="form-control"
+                                           @bind-Value="projetoEdicao.DataEntrega" />
+                            </div>
+
+                            <div class="col-md-4">
+                                <label>Valor Estimado</label>
+                                <InputNumber class="form-control" @bind-Value="projetoEdicao.ValorEstimado" />
+                            </div>
+
+                            <div class="col-12">
+                                <label>Produtos <small class="text-muted">(selecione até 4)</small></label>
+                                <div class="row">
+                                    @foreach (var t in tiposEquip)
+                                    {
+                                        var checkedVal = selecionadosEquip.Contains(t.TipoEquipamentoId);
+                                        var limiteAtingido = selecionadosEquip.Count >= 4 && !checkedVal;
+
+                                        <div class="col-12 col-sm-6 col-lg-4" @key="t.TipoEquipamentoId">
+                                            <div class="form-check">
+                                                <input type="checkbox"
+                                                       class="form-check-input"
+                                                       checked="@checkedVal"
+                                                       @onchange="(ChangeEventArgs e) => ToggleEquip(t.TipoEquipamentoId, (bool)e.Value!)"
+                                                       disabled="@(limiteAtingido)" />
+                                                <label class="form-check-label">@t.Nome</label>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                                <small class="text-muted">Selecionados: @selecionadosEquip.Count / 4</small>
+                            </div>
+                        </div>
+
+                        <div class="mt-3">
+                            <button class="btn btn-success" type="submit">Salvar</button>
+                            <button class="btn btn-secondary ms-2" type="button" @onclick="Cancelar">Cancelar</button>
+                        </div>
+                    </EditForm>
+
+                    @* --------- NOVA SEÇÃO: COMPOSIÇÃO DO PROJETO --------- *@
+                    <div class="mt-4">
+                        <h5>Composição do Projeto</h5>
+
+                        @if (projetoEdicao.ProjetoId == 0)
+                        {
+                            <div class="alert alert-info">
+                                Salve o projeto primeiro para adicionar os sub-itens.
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle">
+                                    <thead>
+                                        <tr>
+                                            <th style="min-width:260px;">Título</th>
+                                            <th style="width:140px;">Horas Estimadas</th>
+                                            <th style="width:160px;">Custo Previsto</th>
+                                            <th style="width:140px;">Entrega</th>
+                                            <th style="width:160px;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var it in componentesAtual)
+                                        {
+                                            var editandoItem = editItemId == it.ComponenteProjetoId;
+                                            <tr @key="it.ComponenteProjetoId">
+                                                <td>
+                                                    @if (editandoItem)
+                                                    {
+                                                        <InputText class="form-control" maxlength="60" @bind-Value="itemTitulo" />
+                                                    }
+                                                    else
+                                                    {
+
+                                                        @it.Titulo
+                                                    }
+                                                </td>
+                                                <td>
+                                                    @if (editandoItem)
+                                                    {
+                                                        <InputNumber TValue="decimal?" class="form-control" @bind-Value="itemHoras" />
+                                                    }
+                                                    else
+                                                    {
+
+                                                        @(it.HorasEstimadas?.ToString("0.##") ?? "-")
+                                                    }
+                                                </td>
+                                                <td>
+                                                    @if (editandoItem)
+                                                    {
+                                                        <InputNumber TValue="decimal?" class="form-control" @bind-Value="itemCusto" />
+                                                    }
+                                                    else
+                                                    {
+
+                                                        @(it.CustoPrevisto?.ToString("C"))
+                                                    }
+                                                </td>
+                                                <td>
+                                                    @if (editandoItem)
+                                                    {
+                                                        <InputDate TValue="DateOnly?" class="form-control" @bind-Value="itemEntrega" />
+                                                    }
+                                                    else
+                                                    {
+
+                                                        @(it.DataEntrega.HasValue? it.DataEntrega.Value.ToString("dd/MM/yyyy") : "-")
+                                                    }
+                                                </td>
+                                                <td class="text-end">
+                                                    @if (editandoItem)
+                                                    {
+                                                        <button class="btn btn-sm btn-success me-1" @onclick="SalvarEdicaoItem">Salvar</button>
+                                                        <button class="btn btn-sm btn-secondary" @onclick="CancelarEdicaoItem">Cancelar</button>
+                                                    }
+                                                    else
+                                                    {
+                                                        <button class="btn btn-sm btn-outline-primary me-1" @onclick="() => IniciarEdicaoItem(it.ComponenteProjetoId)">Editar</button>
+                                                        <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoverItem(it.ComponenteProjetoId)">Excluir</button>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+
+                                        @* Linha de inclusão *@
+                                        <tr>
+                                            <td>
+                                                <InputText class="form-control" maxlength="60" placeholder="Título do item"
+                                                           @bind-Value="novoTitulo" />
+                                            </td>
+                                            <td>
+                                                <InputNumber TValue="decimal?" class="form-control" placeholder="0"
+                                                             @bind-Value="novoHoras" />
+                                            </td>
+                                            <td>
+                                                <InputNumber TValue="decimal?" class="form-control" placeholder="0,00"
+                                                             @bind-Value="novoCusto" />
+                                            </td>
+                                            <td>
+                                                <InputDate TValue="DateOnly?" class="form-control"
+                                                           @bind-Value="novoEntrega" />
+                                            </td>
+                                            <td class="text-end">
+                                                <button class="btn btn-sm btn-success" @onclick="AdicionarItem">Adicionar</button>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            @if (!string.IsNullOrEmpty(erroItem))
+                            {
+                                <div class="text-danger">@erroItem</div>
+                            }
+                        }
+                    </div>
+
+                    <h6 class="mt-4">Histórico</h6>
+                    <table class="table table-sm">
+                        <thead><tr><th>Data</th><th>Usuário</th><th>Evento</th><th>Observação</th></tr></thead>
+                        <tbody>
+                            @foreach (var h in historicoAtual)
+                            {
+                                <tr>
+                                    <td>@h.Data.ToLocalTime().ToString("g")</td>
+                                    <td>@(usuariosDict.TryGetValue(h.UsuarioId ?? "", out var nomeU) ? nomeU : "-")</td>
+                                    <td>@h.Evento</td>
+                                    <td>@h.Observacao</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="row">
+    <div class="col-12">
+        <input class="form-control" placeholder="Filtrar por título/cliente..." @bind="filtro" />
+        <button class="btn btn-primary mt-2" @onclick="Novo">Novo projeto</button>
+
+        <table class="table table-striped mt-3" style="table-layout:auto;">
+            <thead>
+                <tr>
+                    <th>Ordem</th>
+                    <th>Título</th>
+                    <th>Cliente</th>
+                    <th>Status</th>
+                    <th>Orçamento</th>
+                    <th>Início</th>
+                    <th>Entrega</th>
+                    <th>Produtos</th>
+                    <th>Responsável</th>
+                    <th>Atualizado</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var o in projetosFiltrados)
+                {
+                    <tr @key="o.ProjetoId" class="@(projetoEdicao?.ProjetoId == o.ProjetoId && showEditModal ? "table-info" : "")">
+                        <td>@o.Ordem</td>
+                        <td>@o.Titulo</td>
+                        <td>@o.Cliente?.RazaoSocial</td>
+                        <td>@o.Status?.Nome</td>
+                        <td>@(string.IsNullOrWhiteSpace(o.RefOrcamento) ? "-" : o.RefOrcamento)</td>
+                        <td>@(o.DataInicio.HasValue? o.DataInicio.Value.ToString("dd/MM/yyyy") : "-")</td>
+                        <td>@(o.DataEntrega.HasValue? o.DataEntrega.Value.ToString("dd/MM/yyyy") : "-")</td>
+                        <td>
+                            @if (o.Equipamentos is not null && o.Equipamentos.Any())
+                            {
+                                foreach (var e in o.Equipamentos)
+                                {
+                                    <span class="badge bg-light text-dark me-1">@e.Nome</span>
+                                }
+                            }
+                            else
+                            {
+
+                                <span class="text-muted">-</span>
+                            }
+                        </td>
+                        <td>@(usuariosDict.TryGetValue(o.ResponsavelUserId ?? "", out var u) ? u : "-")</td>
+                        <td>@o.DataUltimaAtualizacao.ToLocalTime().ToString("g")</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline-secondary"
+                                    @onclick="async () => await EditarAbrir(o.ProjetoId)">
+                                Editar
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    string filtro = "";
+    string? erroOrdem, erroEquip, erroDatas;
+
+    // modal
+    bool showEditModal = false;
+
+    List<Projeto> projetos = new();
+
+    IEnumerable<Projeto> projetosFiltrados =>
+        (string.IsNullOrWhiteSpace(filtro) ? projetos : projetos.Where(o =>
+            (o.Titulo?.Contains(filtro, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (o.Cliente?.RazaoSocial?.Contains(filtro, StringComparison.OrdinalIgnoreCase) ?? false)));
+
+    List<Cliente> clientes = new();
+    List<StatusProjeto> statuses = new();
+    List<ApplicationUser> usuarios = new();
+    Dictionary<string, string> usuariosDict = new();
+
+    // Tipos de Equipamento e seleção
+    List<TipoEquipamento> tiposEquip = new();
+    List<int> selecionadosEquip = new();
+
+    // ---------- NOVO: composição ----------
+    List<ComponenteProjeto> componentesAtual = new();
+    string? erroItem;
+    // Linha de inclusão
+    string? novoTitulo;
+    decimal? novoHoras, novoCusto;
+    DateOnly? novoEntrega;
+    // Edição inline
+    int? editItemId = null;
+    string? itemTitulo;
+    decimal? itemHoras, itemCusto;
+    DateOnly? itemEntrega;
+
+    readonly HashSet<string> statusNomesPermitidos = new(new[] { "Engenharia", "Montagem", "Garantia", "Finalizado" });
+    IEnumerable<StatusProjeto> statusesPermitidos =>
+        statuses.Where(s => statusNomesPermitidos.Contains(s.Nome)).OrderBy(s => s.Ordem);
+
+    Projeto? projetoEdicao = null;
+    bool editando = false;
+    List<HistoricoProjeto> historicoAtual = new();
+
+    ApplicationUser? currentUser;
+    bool isAdminOrDir = false;
+
+    bool showStatusModal = false;
+    int? pendingStatusId = null;
+    string? statusObservation = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ResolveUserAndRoles();
+        await CarregarBase();
+    }
+
+    async Task ResolveUserAndRoles()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        currentUser = await UserMgr.GetUserAsync(auth.User);
+
+        isAdminOrDir = false;
+        if (currentUser != null)
+        {
+            var roles = await UserMgr.GetRolesAsync(currentUser);
+            isAdminOrDir = roles.Contains("Admin") || roles.Contains("Diretoria");
+        }
+    }
+
+    async Task CarregarBase()
+    {
+        Db.ChangeTracker.Clear();
+
+        clientes = await Db.Clientes.AsNoTracking()
+            .OrderBy(c => c.RazaoSocial ?? string.Empty).ToListAsync();
+
+        statuses = await Db.Statuses.AsNoTracking()
+            .OrderBy(s => s.Ordem).ToListAsync();
+
+        usuarios = await UserMgr.Users.AsNoTracking()
+            .OrderBy(u => u.Email ?? u.UserName).ToListAsync();
+
+        usuariosDict = usuarios.ToDictionary(
+            u => u.Id,
+            u => string.IsNullOrWhiteSpace(u.Nome) ? (u.Email ?? u.UserName ?? "-") : u.Nome
+        );
+
+        tiposEquip = await Db.TiposEquipamentos.AsNoTracking()
+            .OrderBy(x => x.Nome).ToListAsync();
+
+        IQueryable<Projeto> query = Db.Projetos
+            .AsNoTracking()
+            .Include(o => o.Cliente)
+            .Include(o => o.Status)
+            .Include(o => o.Equipamentos);
+
+        if (!isAdminOrDir)
+            query = query.Where(o => o.ResponsavelUserId == UserCtx.UserId);
+
+        projetos = await query
+            .OrderByDescending(o => o.DataUltimaAtualizacao)
+            .ToListAsync();
+    }
+
+    void Novo()
+    {
+        var idEngenharia = statuses.FirstOrDefault(s => s.Nome == "Engenharia")?.StatusProjetoId
+                           ?? statusesPermitidos.FirstOrDefault()?.StatusProjetoId
+                           ?? 0;
+
+        projetoEdicao = new Projeto
+        {
+            ClienteId = clientes.FirstOrDefault()?.ClienteId ?? 0,
+            StatusProjetoId = idEngenharia,
+            ResponsavelUserId = isAdminOrDir ? null : currentUser?.Id
+        };
+        selecionadosEquip = new();
+        historicoAtual = new();
+
+        // composição
+        componentesAtual = new();
+        LimparLinhaInclusao();
+        LimparEdicaoItem();
+
+        editando = true;
+        erroEquip = erroOrdem = erroDatas = null;
+
+        showEditModal = true;
+    }
+
+    async Task EditarAbrir(int id)
+    {
+        await Editar(id);
+        showEditModal = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    async Task Editar(int id)
+    {
+        projetoEdicao = await Db.Projetos.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.ProjetoId == id);
+        if (projetoEdicao is null) return;
+
+        selecionadosEquip = await Db.Projetos
+            .Where(p => p.ProjetoId == id)
+            .SelectMany(p => p.Equipamentos.Select(e => e.TipoEquipamentoId))
+            .ToListAsync();
+
+        historicoAtual = await Db.Historicos.AsNoTracking()
+            .Where(h => h.ProjetoId == id)
+            .OrderByDescending(h => h.Data).ToListAsync();
+
+        // carregar composição
+        await CarregarComponentes(id);
+
+        if (!isAdminOrDir && projetoEdicao.ResponsavelUserId != UserCtx.UserId)
+        {
+            editando = false;
+            return;
+        }
+
+        editando = true;
+    }
+
+    async Task CarregarComponentes(int projetoId)
+    {
+        componentesAtual = await Db.ComponentesProjetos.AsNoTracking()
+            .Where(c => c.ProjetoId == projetoId)
+            .OrderBy(c => c.DataEntrega ?? DateOnly.MaxValue)
+            .ThenBy(c => c.Titulo)
+            .ToListAsync();
+        StateHasChanged();
+    }
+
+    void ToggleEquip(int id, bool selected)
+    {
+        if (selected)
+        {
+            if (!selecionadosEquip.Contains(id) && selecionadosEquip.Count < 4)
+                selecionadosEquip.Add(id);
+        }
+        else
+        {
+            selecionadosEquip.Remove(id);
+        }
+        StateHasChanged();
+    }
+
+    async Task Salvar()
+    {
+        if (projetoEdicao is null) return;
+
+        // Ordem única
+        erroOrdem = null;
+        var existe = await Db.Projetos.AsNoTracking()
+            .AnyAsync(p => p.Ordem == projetoEdicao.Ordem && p.ProjetoId != projetoEdicao.ProjetoId);
+        if (existe)
+        {
+            erroOrdem = $"Já existe um projeto com a Ordem {projetoEdicao.Ordem}.";
+            return;
+        }
+
+        // Datas coerentes
+        erroDatas = null;
+        if (projetoEdicao.DataInicio.HasValue && projetoEdicao.DataEntrega.HasValue
+            && projetoEdicao.DataEntrega.Value < projetoEdicao.DataInicio.Value)
+        {
+            erroDatas = "Data Entrega não pode ser anterior à Data Início.";
+            return;
+        }
+
+        // Limite de 4
+        erroEquip = null;
+        if (selecionadosEquip.Count > 4)
+        {
+            erroEquip = "Selecione no máximo 4 tipos de equipamentos.";
+            return;
+        }
+
+        // Evita anexar navegações
+        projetoEdicao.Cliente = null;
+        projetoEdicao.Status = null;
+
+        if (projetoEdicao.ProjetoId == 0)
+        {
+            var tipos = await Db.TiposEquipamentos
+                .Where(t => selecionadosEquip.Contains(t.TipoEquipamentoId)).ToListAsync();
+
+            projetoEdicao.Equipamentos = tipos;
+            Db.Projetos.Add(projetoEdicao);
+            await Db.SaveChangesAsync();
+        }
+        else
+        {
+            var tracked = await Db.Projetos
+                .Include(p => p.Equipamentos)
+                .FirstAsync(p => p.ProjetoId == projetoEdicao.ProjetoId);
+
+            Db.Entry(tracked).CurrentValues.SetValues(projetoEdicao);
+
+            tracked.Equipamentos.Clear();
+            if (selecionadosEquip.Any())
+            {
+                var tipos = await Db.TiposEquipamentos
+                    .Where(t => selecionadosEquip.Contains(t.TipoEquipamentoId)).ToListAsync();
+                foreach (var t in tipos) tracked.Equipamentos.Add(t);
+            }
+
+            await Db.SaveChangesAsync();
+        }
+
+        Db.ChangeTracker.Clear();
+        await CarregarBase();
+
+        if (projetoEdicao.ProjetoId != 0)
+        {
+            historicoAtual = await Db.Historicos.AsNoTracking()
+                .Where(h => h.ProjetoId == projetoEdicao.ProjetoId)
+                .OrderByDescending(h => h.Data).ToListAsync();
+
+            // recarregar composição (continua a mesma)
+            await CarregarComponentes(projetoEdicao.ProjetoId);
+        }
+        StateHasChanged();
+    }
+
+    void Cancelar()
+    {
+        showEditModal = false;
+        editando = false;
+        projetoEdicao = null;
+        historicoAtual = new();
+        selecionadosEquip = new();
+        componentesAtual = new();
+        LimparLinhaInclusao();
+        LimparEdicaoItem();
+        erroEquip = erroOrdem = erroDatas = erroItem = null;
+    }
+
+    void SetStatus(int statusId)
+    {
+        //if (!isAdminOrDir && projetoEdicao?.ResponsavelUserId != UserCtx.UserId)
+        //    return;
+        pendingStatusId = statusId;
+        statusObservation = null;
+        showStatusModal = true;
+    }
+
+    void CancelStatusModal()
+    {
+        showStatusModal = false;
+        pendingStatusId = null;
+        statusObservation = null;
+        StateHasChanged();
+    }
+
+    async Task ConfirmStatusChange()
+    {
+        if (projetoEdicao is null || pendingStatusId is null)
+        {
+            CancelStatusModal();
+            return;
+        }
+
+        if (projetoEdicao.ProjetoId != 0)
+            ChangeNotes.SetStatusNote(projetoEdicao.ProjetoId, statusObservation);
+
+        projetoEdicao.StatusProjetoId = pendingStatusId.Value;
+
+        CancelStatusModal();
+        await Salvar();
+    }
+
+    // --------- Handlers de COMPOSIÇÃO ---------
+    void LimparLinhaInclusao()
+    {
+        novoTitulo = null;
+        novoHoras = null;
+        novoCusto = null;
+        novoEntrega = null;
+        erroItem = null;
+    }
+
+    void LimparEdicaoItem()
+    {
+        editItemId = null;
+        itemTitulo = null;
+        itemHoras = null;
+        itemCusto = null;
+        itemEntrega = null;
+    }
+
+    async Task AdicionarItem()
+    {
+        if (projetoEdicao is null || projetoEdicao.ProjetoId == 0)
+        {
+            erroItem = "Salve o projeto antes de adicionar itens.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(novoTitulo))
+        {
+            erroItem = "Informe o Título do item.";
+            return;
+        }
+        if (novoTitulo!.Length > 60)
+        {
+            erroItem = "Título deve ter no máximo 60 caracteres.";
+            return;
+        }
+
+        var ent = new ComponenteProjeto
+        {
+            ProjetoId = projetoEdicao.ProjetoId,
+            Titulo = novoTitulo!,
+            HorasEstimadas = novoHoras,
+            CustoPrevisto = novoCusto,
+            DataEntrega = novoEntrega
+        };
+
+        Db.ComponentesProjetos.Add(ent);
+        await Db.SaveChangesAsync();
+
+        LimparLinhaInclusao();
+        await CarregarComponentes(projetoEdicao.ProjetoId);
+    }
+
+    void IniciarEdicaoItem(int id)
+    {
+        var it = componentesAtual.First(x => x.ComponenteProjetoId == id);
+        editItemId = id;
+        itemTitulo = it.Titulo;
+        itemHoras = it.HorasEstimadas;
+        itemCusto = it.CustoPrevisto;
+        itemEntrega = it.DataEntrega;
+        erroItem = null;
+    }
+
+    async Task SalvarEdicaoItem()
+    {
+        if (projetoEdicao is null || editItemId is null) return;
+        if (string.IsNullOrWhiteSpace(itemTitulo))
+        {
+            erroItem = "Informe o Título do item.";
+            return;
+        }
+        if (itemTitulo!.Length > 60)
+        {
+            erroItem = "Título deve ter no máximo 60 caracteres.";
+            return;
+        }
+
+        var tracked = await Db.ComponentesProjetos
+            .FirstAsync(x => x.ComponenteProjetoId == editItemId.Value);
+
+        tracked.Titulo = itemTitulo!;
+        tracked.HorasEstimadas = itemHoras;
+        tracked.CustoPrevisto = itemCusto;
+        tracked.DataEntrega = itemEntrega;
+
+        await Db.SaveChangesAsync();
+
+        LimparEdicaoItem();
+        await CarregarComponentes(projetoEdicao.ProjetoId);
+    }
+
+    void CancelarEdicaoItem()
+    {
+        LimparEdicaoItem();
+        erroItem = null;
+    }
+
+    async Task RemoverItem(int id)
+    {
+        var tracked = await Db.ComponentesProjetos
+            .FirstAsync(x => x.ComponenteProjetoId == id);
+
+        Db.ComponentesProjetos.Remove(tracked);
+        await Db.SaveChangesAsync();
+
+        if (projetoEdicao is not null)
+            await CarregarComponentes(projetoEdicao.ProjetoId);
+    }
+}

@@ -1,0 +1,387 @@
+﻿@page "/usuarios"
+@attribute [Authorize(Roles = "Admin,Diretoria")]
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.EntityFrameworkCore
+@using Falcare.Projetos.App.Models
+@using System.ComponentModel.DataAnnotations
+@inject AuthenticationStateProvider AuthState
+@inject Falcare.Projetos.App.Data.AppDbContext Db
+@inject UserManager<ApplicationUser> UserMgr
+@inject RoleManager<IdentityRole> RoleMgr
+@attribute [Authorize]
+
+<h3>Usuários</h3>
+
+<div class="d-flex gap-2 mb-3">
+    <input class="form-control" placeholder="Filtrar por nome/email..." @bind="filtro" @bind:event="oninput" />
+    @if (isAdminOrDir)
+    {
+        <button class="btn btn-primary" @onclick="ToggleNovo">@((showCreate ? "Fechar" : "Novo usuário"))</button>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(msgErro))
+{
+    <div class="alert alert-danger">@msgErro</div>
+}
+@if (!string.IsNullOrEmpty(msgOk))
+{
+    <div class="alert alert-success">@msgOk</div>
+}
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Nome</th>
+            <th>Email</th>
+            <th>Confirmado</th>
+            <th style="width:9rem;"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var u in usuariosFiltrados)
+        {
+            var podeEditar = CanEdit(u);
+            <tr class="@(userEdicao?.Id == u.Id ? "table-info" : "")">
+                <td>@(u.Nome ?? "-")</td>
+                <td>@u.Email</td>
+                <td>@(u.EmailConfirmed ? "Sim" : "Não")</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            disabled="@(podeEditar ? null : true)"
+                            title="@(podeEditar ? "" : "Você não pode editar este usuário")"
+                            @onclick="() => Editar(u.Id)">
+                        Editar
+                    </button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (showCreate && isAdminOrDir)
+{
+    <hr />
+    <h5>Novo usuário</h5>
+
+    @if (!string.IsNullOrEmpty(erroNovo))
+    {
+        <div class="alert alert-danger">@erroNovo</div>
+    }
+
+    <EditForm Model="novoForm" OnValidSubmit="SalvarNovo">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        <div class="mb-2">
+            <label>Nome</label>
+            <InputText class="form-control" @bind-Value="novoForm.Nome" />
+        </div>
+
+        <div class="mb-2">
+            <label>E-mail</label>
+            <InputText class="form-control" @bind-Value="novoForm.Email" />
+        </div>
+
+        <div class="mb-2">
+            <label>Senha</label>
+            <InputText type="password" class="form-control" @bind-Value="novoForm.Password" />
+        </div>
+
+        <div class="mb-3">
+            <label>Confirmar senha</label>
+            <InputText type="password" class="form-control" @bind-Value="novoForm.ConfirmPassword" />
+        </div>
+
+        <div class="mb-3">
+            <div class="form-check">
+                <InputCheckbox class="form-check-input" @bind-Value="novoForm.RoleAdmin" />
+                <label class="form-check-label">Conceder papel <strong>Admin</strong></label>
+            </div>
+            <div class="form-check">
+                <InputCheckbox class="form-check-input" @bind-Value="novoForm.RoleDiretoria" />
+                <label class="form-check-label">Conceder papel <strong>Diretoria</strong></label>
+            </div>
+            <div class="form-text">Os papéis são opcionais. É necessário que já existam (seed em Program.cs).</div>
+        </div>
+
+        <button class="btn btn-primary" type="submit">Criar usuário</button>
+        <button class="btn btn-secondary ms-2" type="button" @onclick="ToggleNovo">Cancelar</button>
+    </EditForm>
+}
+
+@if (userEdicao is not null)
+{
+    <hr />
+    <h5>Editar usuário</h5>
+
+    @if (!string.IsNullOrEmpty(erroForm))
+    {
+        <div class="alert alert-danger">@erroForm</div>
+    }
+
+    <EditForm Model="userForm" OnValidSubmit="SalvarEdicao">
+        <DataAnnotationsValidator />
+        <ValidationSummary />
+
+        <div class="mb-2">
+            <label>Nome</label>
+            <InputText class="form-control" @bind-Value="userForm.Nome" />
+        </div>
+
+        <div class="mb-3">
+            <label>E-mail</label>
+            <InputText class="form-control" @bind-Value="userForm.Email" />
+            <div class="form-text">O e-mail deve ser único.</div>
+        </div>
+
+        <button class="btn btn-primary" type="submit">Salvar</button>
+        <button class="btn btn-secondary ms-2" @onclick="CancelarEdicao" type="button">Cancelar</button>
+    </EditForm>
+}
+
+@code {
+    // ------------------- estado / injeções -------------------
+    private ApplicationUser? currentUser;
+    private bool isAdminOrDir;
+
+    private List<ApplicationUser> usuarios = new();
+    private string? filtro;
+
+    private IEnumerable<ApplicationUser> usuariosFiltrados => string.IsNullOrWhiteSpace(filtro)
+        ? usuarios
+        : usuarios.Where(u =>
+            (u.Nome ?? "").Contains(filtro, StringComparison.OrdinalIgnoreCase) ||
+            (u.Email ?? "").Contains(filtro, StringComparison.OrdinalIgnoreCase));
+
+    private string? msgErro, msgOk;
+
+    // criação
+    private bool showCreate = false;
+    private CreateUserModel novoForm = new();
+    private string? erroNovo;
+
+    // edição
+    private ApplicationUser? userEdicao;
+    private EditUserModel userForm = new();
+    private string? erroForm;
+
+    // ------------------- lifecycle -------------------
+    protected override async Task OnInitializedAsync()
+    {
+        await ResolveUserAndRoles();
+        await Carregar();
+    }
+
+    private async Task ResolveUserAndRoles()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        currentUser = await UserMgr.GetUserAsync(auth.User);
+
+        isAdminOrDir = false;
+        if (currentUser is not null)
+        {
+            var roles = await UserMgr.GetRolesAsync(currentUser);
+            isAdminOrDir = roles.Contains("Admin") || roles.Contains("Diretoria");
+        }
+    }
+
+    private async Task Carregar()
+    {
+        msgErro = msgOk = null;
+        usuarios = await UserMgr.Users.AsNoTracking()
+            .OrderBy(u => u.Nome ?? u.Email ?? u.UserName)
+            .ToListAsync();
+        StateHasChanged();
+    }
+
+    // ------------------- helpers -------------------
+    private bool CanEdit(ApplicationUser u)
+        => isAdminOrDir || (currentUser != null && u.Id == currentUser.Id);
+
+    private void ToggleNovo()
+    {
+        showCreate = !showCreate;
+        erroNovo = null;
+        if (showCreate) novoForm = new();
+    }
+
+    // ------------------- criação -------------------
+    private async Task SalvarNovo()
+    {
+        if (!isAdminOrDir)
+            return;
+
+        erroNovo = msgErro = msgOk = null;
+
+        var email = (novoForm.Email ?? "").Trim();
+        var nome = string.IsNullOrWhiteSpace(novoForm.Nome) ? null : novoForm.Nome!.Trim();
+
+        // validações básicas extras
+        if (string.IsNullOrEmpty(email))
+        {
+            erroNovo = "E-mail é obrigatório.";
+            return;
+        }
+
+        var dup = await UserMgr.FindByEmailAsync(email);
+        if (dup is not null)
+        {
+            erroNovo = $"Já existe um usuário com o e-mail {email}.";
+            return;
+        }
+
+        var newUser = new ApplicationUser
+        {
+            Email = email,
+            UserName = email,   // se seu login é por e-mail, mantenha sincronizado
+            Nome = nome
+        };
+
+        var create = await UserMgr.CreateAsync(newUser, novoForm.Password ?? "");
+        if (!create.Succeeded)
+        {
+            erroNovo = string.Join("; ", create.Errors.Select(e => e.Description));
+            return;
+        }
+
+        // papéis (opcionais)
+        if (novoForm.RoleAdmin)
+        {
+            var r = await UserMgr.AddToRoleAsync(newUser, "Admin");
+            if (!r.Succeeded) { erroNovo = "Usuário criado, mas falha ao adicionar papel Admin: " + string.Join("; ", r.Errors.Select(e => e.Description)); }
+        }
+        if (novoForm.RoleDiretoria)
+        {
+            var r = await UserMgr.AddToRoleAsync(newUser, "Diretoria");
+            if (!r.Succeeded) { erroNovo = "Usuário criado, mas falha ao adicionar papel Diretoria: " + string.Join("; ", r.Errors.Select(e => e.Description)); }
+        }
+
+        if (string.IsNullOrEmpty(erroNovo))
+            msgOk = "Usuário criado com sucesso.";
+
+        showCreate = false;
+        await Carregar();
+    }
+
+    // ------------------- edição -------------------
+    private async Task Editar(string id)
+    {
+        msgErro = msgOk = erroForm = null;
+
+        var u = await UserMgr.FindByIdAsync(id);
+        if (u is null)
+        {
+            msgErro = "Usuário não encontrado.";
+            return;
+        }
+
+        if (!CanEdit(u))
+        {
+            msgErro = "Você não tem permissão para editar este usuário.";
+            return;
+        }
+
+        userEdicao = u;
+        userForm = new EditUserModel
+        {
+            Nome = u.Nome ?? string.Empty,
+            Email = u.Email ?? string.Empty
+        };
+    }
+
+    private Task CancelarEdicao()
+    {
+        userEdicao = null;
+        userForm = new();
+        erroForm = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task SalvarEdicao()
+    {
+        if (userEdicao is null) return;
+        erroForm = msgErro = msgOk = null;
+
+        if (!CanEdit(userEdicao))
+        {
+            erroForm = "Você não tem permissão para editar este usuário.";
+            return;
+        }
+
+        var novoEmail = (userForm.Email ?? "").Trim();
+        if (string.IsNullOrEmpty(novoEmail))
+        {
+            erroForm = "E-mail é obrigatório.";
+            return;
+        }
+
+        // e-mail único
+        var jaExiste = await UserMgr.FindByEmailAsync(novoEmail);
+        if (jaExiste is not null && jaExiste.Id != userEdicao.Id)
+        {
+            erroForm = $"Já existe um usuário com o e-mail {novoEmail}.";
+            return;
+        }
+
+        // atualizar Nome
+        userEdicao.Nome = string.IsNullOrWhiteSpace(userForm.Nome) ? null : userForm.Nome!.Trim();
+
+        // atualizar Email (e UserName se desejar manter igual)
+        var setEmail = await UserMgr.SetEmailAsync(userEdicao, novoEmail);
+        if (!setEmail.Succeeded)
+        {
+            erroForm = string.Join("; ", setEmail.Errors.Select(e => e.Description));
+            return;
+        }
+
+        // se seu login usa e-mail como username, mantenha sincronizado:
+        var setUserName = await UserMgr.SetUserNameAsync(userEdicao, novoEmail);
+        if (!setUserName.Succeeded)
+        {
+            erroForm = string.Join("; ", setUserName.Errors.Select(e => e.Description));
+            return;
+        }
+
+        var upd = await UserMgr.UpdateAsync(userEdicao);
+        if (!upd.Succeeded)
+        {
+            erroForm = string.Join("; ", upd.Errors.Select(e => e.Description));
+            return;
+        }
+
+        msgOk = "Usuário atualizado com sucesso.";
+        await Carregar();
+        await CancelarEdicao();
+    }
+
+    // ------------------- view models -------------------
+    public class CreateUserModel
+    {
+        [Required, StringLength(160)]
+        public string? Nome { get; set; }
+
+        [Required, EmailAddress, StringLength(256)]
+        public string? Email { get; set; }
+
+        // ajuste os requisitos conforme suas políticas de senha no Program.cs
+        [Required, StringLength(100, MinimumLength = 6)]
+        public string? Password { get; set; }
+
+        [Compare(nameof(Password), ErrorMessage = "As senhas não conferem.")]
+        public string? ConfirmPassword { get; set; }
+
+        public bool RoleAdmin { get; set; }
+        public bool RoleDiretoria { get; set; }
+    }
+
+    public class EditUserModel
+    {
+        [StringLength(160)]
+        public string? Nome { get; set; }
+
+        [Required, EmailAddress, StringLength(256)]
+        public string? Email { get; set; }
+    }
+}
+
